@@ -7,11 +7,14 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Event;
+namespace PHPUnit\Event\Telemetry;
 
 /**
- * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
+ * @internal This interface is not covered by the backward compatibility promise for PHPUnit
  */
-final class InvalidArgumentException extends \InvalidArgumentException implements Exception
+interface MemoryMeter
 {
+    public function memoryUsage(): MemoryUsage;
+
+    public function peakMemoryUsage(): MemoryUsage;
 }
