@@ -7,13 +7,13 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\TextUI\XmlConfiguration;
+namespace PHPUnit\TextUI\Configuration;
 
 use RuntimeException;
 
 /**
  * @internal This class is not covered by the backward compatibility promise for PHPUnit
  */
-final class Exception extends RuntimeException implements \PHPUnit\Exception
+final class NoBaselineException extends RuntimeException implements Exception
 {
 }

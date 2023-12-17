@@ -9,11 +9,12 @@
  */
 namespace PHPUnit\TextUI\XmlConfiguration;
 
+use PHPUnit\TextUI\Configuration\Exception;
 use RuntimeException;
 
 /**
  * @internal This class is not covered by the backward compatibility promise for PHPUnit
  */
-final class Exception extends RuntimeException implements \PHPUnit\Exception
+final class CannotFindSchemaException extends RuntimeException implements Exception
 {
 }

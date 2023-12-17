@@ -7,112 +7,43 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Metadata\Api;
+namespace PHPUnit\TextUI\XmlConfiguration;
 
-use function array_flip;
-use function array_unique;
-use function assert;
-use function strtolower;
-use function trim;
-use PHPUnit\Framework\TestSize\TestSize;
-use PHPUnit\Metadata\Covers;
-use PHPUnit\Metadata\CoversClass;
-use PHPUnit\Metadata\CoversFunction;
-use PHPUnit\Metadata\Group;
-use PHPUnit\Metadata\Parser\Registry;
-use PHPUnit\Metadata\Uses;
-use PHPUnit\Metadata\UsesClass;
-use PHPUnit\Metadata\UsesFunction;
+use PHPUnit\TextUI\Configuration\GroupCollection;
 
 /**
  * @internal This class is not covered by the backward compatibility promise for PHPUnit
+ *
+ * @psalm-immutable
  */
 final class Groups
 {
-    /**
-     * @psalm-param class-string $className
-     * @psalm-param non-empty-string $methodName
-     *
-     * @psalm-return list<string>
-     */
-    public function groups(string $className, string $methodName, bool $includeVirtual = true): array
+    private readonly GroupCollection $include;
+    private readonly GroupCollection $exclude;
+
+    public function __construct(GroupCollection $include, GroupCollection $exclude)
     {
-        $groups = [];
-
-        foreach (Registry::parser()->forClassAndMethod($className, $methodName)->isGroup() as $group) {
-            assert($group instanceof Group);
-
-            $groups[] = $group->groupName();
-        }
-
-        if ($groups === []) {
-            $groups[] = 'default';
-        }
-
-        if (!$includeVirtual) {
-            return array_unique($groups);
-        }
-
-        foreach (Registry::parser()->forClassAndMethod($className, $methodName) as $metadata) {
-            if ($metadata->isCoversClass() || $metadata->isCoversFunction()) {
-                assert($metadata instanceof CoversClass || $metadata instanceof CoversFunction);
-
-                $groups[] = '__phpunit_covers_' . $this->canonicalizeName($metadata->asStringForCodeUnitMapper());
-
-                continue;
-            }
-
-            if ($metadata->isCovers()) {
-                assert($metadata instanceof Covers);
-
-                $groups[] = '__phpunit_covers_' . $this->canonicalizeName($metadata->target());
-
-                continue;
-            }
-
-            if ($metadata->isUsesClass() || $metadata->isUsesFunction()) {
-                assert($metadata instanceof UsesClass || $metadata instanceof UsesFunction);
-
-                $groups[] = '__phpunit_uses_' . $this->canonicalizeName($metadata->asStringForCodeUnitMapper());
-
-                continue;
-            }
-
-            if ($metadata->isUses()) {
-                assert($metadata instanceof Uses);
-
-                $groups[] = '__phpunit_uses_' . $this->canonicalizeName($metadata->target());
-            }
-        }
-
-        return array_unique($groups);
+        $this->include = $include;
+        $this->exclude = $exclude;
     }
 
-    /**
-     * @psalm-param class-string $className
-     * @psalm-param non-empty-string $methodName
-     */
-    public function size(string $className, string $methodName): TestSize
+    public function hasInclude(): bool
     {
-        $groups = array_flip($this->groups($className, $methodName));
-
-        if (isset($groups['large'])) {
-            return TestSize::large();
-        }
-
-        if (isset($groups['medium'])) {
-            return TestSize::medium();
-        }
-
-        if (isset($groups['small'])) {
-            return TestSize::small();
-        }
-
-        return TestSize::unknown();
+        return !$this->include->isEmpty();
     }
 
-    private function canonicalizeName(string $name): string
+    public function include(): GroupCollection
     {
-        return strtolower(trim($name, '\\'));
+        return $this->include;
+    }
+
+    public function hasExclude(): bool
+    {
+        return !$this->exclude->isEmpty();
+    }
+
+    public function exclude(): GroupCollection
+    {
+        return $this->exclude;
     }
 }

@@ -7,74 +7,63 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Runner\Baseline;
+namespace PHPUnit\TextUI\XmlConfiguration;
 
-use PHPUnit\Event\EventFacadeIsSealedException;
-use PHPUnit\Event\Facade;
-use PHPUnit\Event\Test\DeprecationTriggered;
-use PHPUnit\Event\Test\NoticeTriggered;
-use PHPUnit\Event\Test\PhpDeprecationTriggered;
-use PHPUnit\Event\Test\PhpNoticeTriggered;
-use PHPUnit\Event\Test\PhpWarningTriggered;
-use PHPUnit\Event\Test\WarningTriggered;
-use PHPUnit\Event\UnknownSubscriberTypeException;
-use PHPUnit\Runner\FileDoesNotExistException;
-use PHPUnit\TextUI\Configuration\Source;
-use PHPUnit\TextUI\Configuration\SourceFilter;
+use function str_replace;
 
 /**
  * @internal This class is not covered by the backward compatibility promise for PHPUnit
  */
 final class Generator
 {
-    private Baseline $baseline;
-    private readonly Source $source;
-
     /**
-     * @throws EventFacadeIsSealedException
-     * @throws UnknownSubscriberTypeException
+     * @var string
      */
-    public function __construct(Facade $facade, Source $source)
+    private const TEMPLATE = <<<'EOT'
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/{phpunit_version}/phpunit.xsd"
+         bootstrap="{bootstrap_script}"
+         cacheDirectory="{cache_directory}"
+         executionOrder="depends,defects"
+         requireCoverageMetadata="true"
+         beStrictAboutCoverageMetadata="true"
+         beStrictAboutOutputDuringTests="true"
+         failOnRisky="true"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="default">
+            <directory>{tests_directory}</directory>
+        </testsuite>
+    </testsuites>
+
+    <source restrictDeprecations="true" restrictNotices="true" restrictWarnings="true">
+        <include>
+            <directory>{src_directory}</directory>
+        </include>
+    </source>
+</phpunit>
+
+EOT;
+
+    public function generateDefaultConfiguration(string $phpunitVersion, string $bootstrapScript, string $testsDirectory, string $srcDirectory, string $cacheDirectory): string
     {
-        $facade->registerSubscribers(
-            new TestTriggeredDeprecationSubscriber($this),
-            new TestTriggeredNoticeSubscriber($this),
-            new TestTriggeredPhpDeprecationSubscriber($this),
-            new TestTriggeredPhpNoticeSubscriber($this),
-            new TestTriggeredPhpWarningSubscriber($this),
-            new TestTriggeredWarningSubscriber($this),
-        );
-
-        $this->baseline = new Baseline;
-        $this->source   = $source;
-    }
-
-    public function baseline(): Baseline
-    {
-        return $this->baseline;
-    }
-
-    /**
-     * @throws FileDoesNotExistException
-     * @throws FileDoesNotHaveLineException
-     */
-    public function testTriggeredIssue(DeprecationTriggered|NoticeTriggered|PhpDeprecationTriggered|PhpNoticeTriggered|PhpWarningTriggered|WarningTriggered $event): void
-    {
-        if (!$this->source->ignoreSuppressionOfPhpWarnings() && $event->wasSuppressed()) {
-            return;
-        }
-
-        if ($this->source->restrictWarnings() && !(new SourceFilter)->includes($this->source, $event->file())) {
-            return;
-        }
-
-        $this->baseline->add(
-            Issue::from(
-                $event->file(),
-                $event->line(),
-                null,
-                $event->message(),
-            ),
+        return str_replace(
+            [
+                '{phpunit_version}',
+                '{bootstrap_script}',
+                '{tests_directory}',
+                '{src_directory}',
+                '{cache_directory}',
+            ],
+            [
+                $phpunitVersion,
+                $bootstrapScript,
+                $testsDirectory,
+                $srcDirectory,
+                $cacheDirectory,
+            ],
+            self::TEMPLATE,
         );
     }
 }
