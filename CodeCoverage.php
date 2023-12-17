@@ -7,308 +7,416 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Metadata\Api;
+namespace PHPUnit\Runner;
 
-use function array_unique;
-use function array_values;
-use function assert;
-use function count;
-use function interface_exists;
+use function file_put_contents;
 use function sprintf;
-use function str_starts_with;
-use PHPUnit\Framework\CodeCoverageException;
-use PHPUnit\Framework\InvalidCoversTargetException;
-use PHPUnit\Framework\TestSuite;
-use PHPUnit\Metadata\Covers;
-use PHPUnit\Metadata\CoversClass;
-use PHPUnit\Metadata\CoversDefaultClass;
-use PHPUnit\Metadata\CoversFunction;
-use PHPUnit\Metadata\IgnoreClassForCodeCoverage;
-use PHPUnit\Metadata\IgnoreFunctionForCodeCoverage;
-use PHPUnit\Metadata\IgnoreMethodForCodeCoverage;
-use PHPUnit\Metadata\Parser\Registry;
-use PHPUnit\Metadata\Uses;
-use PHPUnit\Metadata\UsesClass;
-use PHPUnit\Metadata\UsesDefaultClass;
-use PHPUnit\Metadata\UsesFunction;
-use RecursiveIteratorIterator;
-use SebastianBergmann\CodeUnit\CodeUnitCollection;
-use SebastianBergmann\CodeUnit\InvalidCodeUnitException;
-use SebastianBergmann\CodeUnit\Mapper;
+use PHPUnit\Event\Facade as EventFacade;
+use PHPUnit\Event\TestData\MoreThanOneDataSetFromDataProviderException;
+use PHPUnit\Event\TestData\NoDataSetFromDataProviderException;
+use PHPUnit\Framework\TestCase;
+use PHPUnit\TextUI\Configuration\CodeCoverageFilterRegistry;
+use PHPUnit\TextUI\Configuration\Configuration;
+use PHPUnit\TextUI\Output\Printer;
+use SebastianBergmann\CodeCoverage\Driver\Driver;
+use SebastianBergmann\CodeCoverage\Driver\Selector;
+use SebastianBergmann\CodeCoverage\Exception as CodeCoverageException;
+use SebastianBergmann\CodeCoverage\Filter;
+use SebastianBergmann\CodeCoverage\Report\Clover as CloverReport;
+use SebastianBergmann\CodeCoverage\Report\Cobertura as CoberturaReport;
+use SebastianBergmann\CodeCoverage\Report\Crap4j as Crap4jReport;
+use SebastianBergmann\CodeCoverage\Report\Html\Colors;
+use SebastianBergmann\CodeCoverage\Report\Html\CustomCssFile;
+use SebastianBergmann\CodeCoverage\Report\Html\Facade as HtmlReport;
+use SebastianBergmann\CodeCoverage\Report\PHP as PhpReport;
+use SebastianBergmann\CodeCoverage\Report\Text as TextReport;
+use SebastianBergmann\CodeCoverage\Report\Thresholds;
+use SebastianBergmann\CodeCoverage\Report\Xml\Facade as XmlReport;
+use SebastianBergmann\CodeCoverage\Test\TestSize\TestSize;
+use SebastianBergmann\CodeCoverage\Test\TestStatus\TestStatus;
+use SebastianBergmann\Comparator\Comparator;
+use SebastianBergmann\Timer\NoActiveTimerException;
+use SebastianBergmann\Timer\Timer;
 
 /**
  * @internal This class is not covered by the backward compatibility promise for PHPUnit
  */
 final class CodeCoverage
 {
+    private static ?self $instance                                      = null;
+    private ?\SebastianBergmann\CodeCoverage\CodeCoverage $codeCoverage = null;
+    private ?Driver $driver                                             = null;
+    private bool $collecting                                            = false;
+    private ?TestCase $test                                             = null;
+    private ?Timer $timer                                               = null;
+
     /**
-     * @psalm-param class-string $className
-     * @psalm-param non-empty-string $methodName
-     *
-     * @psalm-return array<string,list<int>>|false
-     *
-     * @throws CodeCoverageException
+     * @psalm-var array<string,list<int>>
      */
-    public function linesToBeCovered(string $className, string $methodName): array|false
+    private array $linesToBeIgnored = [];
+
+    public static function instance(): self
     {
-        if (!$this->shouldCodeCoverageBeCollectedFor($className, $methodName)) {
-            return false;
+        if (self::$instance === null) {
+            self::$instance = new self;
         }
 
-        $metadataForClass = Registry::parser()->forClass($className);
-        $classShortcut    = null;
+        return self::$instance;
+    }
 
-        if ($metadataForClass->isCoversDefaultClass()->isNotEmpty()) {
-            if (count($metadataForClass->isCoversDefaultClass()) > 1) {
-                throw new CodeCoverageException(
-                    sprintf(
-                        'More than one @coversDefaultClass annotation for class or interface "%s"',
-                        $className,
-                    ),
+    public function init(Configuration $configuration, CodeCoverageFilterRegistry $codeCoverageFilterRegistry, bool $extensionRequiresCodeCoverageCollection): void
+    {
+        $codeCoverageFilterRegistry->init($configuration);
+
+        if (!$configuration->hasCoverageReport() && !$extensionRequiresCodeCoverageCollection) {
+            return;
+        }
+
+        $this->activate($codeCoverageFilterRegistry->get(), $configuration->pathCoverage());
+
+        if (!$this->isActive()) {
+            return;
+        }
+
+        if ($configuration->hasCoverageCacheDirectory()) {
+            $this->codeCoverage()->cacheStaticAnalysis($configuration->coverageCacheDirectory());
+        }
+
+        $this->codeCoverage()->excludeSubclassesOfThisClassFromUnintentionallyCoveredCodeCheck(Comparator::class);
+
+        if ($configuration->strictCoverage()) {
+            $this->codeCoverage()->enableCheckForUnintentionallyCoveredCode();
+        }
+
+        if ($configuration->ignoreDeprecatedCodeUnitsFromCodeCoverage()) {
+            $this->codeCoverage()->ignoreDeprecatedCode();
+        } else {
+            $this->codeCoverage()->doNotIgnoreDeprecatedCode();
+        }
+
+        if ($configuration->disableCodeCoverageIgnore()) {
+            $this->codeCoverage()->disableAnnotationsForIgnoringCode();
+        } else {
+            $this->codeCoverage()->enableAnnotationsForIgnoringCode();
+        }
+
+        if ($configuration->includeUncoveredFiles()) {
+            $this->codeCoverage()->includeUncoveredFiles();
+        } else {
+            $this->codeCoverage()->excludeUncoveredFiles();
+        }
+
+        if ($codeCoverageFilterRegistry->get()->isEmpty()) {
+            if (!$codeCoverageFilterRegistry->configured()) {
+                EventFacade::emitter()->testRunnerTriggeredWarning(
+                    'No filter is configured, code coverage will not be processed',
+                );
+            } else {
+                EventFacade::emitter()->testRunnerTriggeredWarning(
+                    'Incorrect filter configuration, code coverage will not be processed',
                 );
             }
 
-            $metadata = $metadataForClass->isCoversDefaultClass()->asArray()[0];
-
-            assert($metadata instanceof CoversDefaultClass);
-
-            $classShortcut = $metadata->className();
+            $this->deactivate();
         }
-
-        $codeUnits = CodeUnitCollection::fromList();
-        $mapper    = new Mapper;
-
-        foreach (Registry::parser()->forClassAndMethod($className, $methodName) as $metadata) {
-            if ($metadata->isCoversClass() || $metadata->isCoversFunction()) {
-                assert($metadata instanceof CoversClass || $metadata instanceof CoversFunction);
-
-                try {
-                    $codeUnits = $codeUnits->mergeWith(
-                        $mapper->stringToCodeUnits($metadata->asStringForCodeUnitMapper()),
-                    );
-                } catch (InvalidCodeUnitException $e) {
-                    if ($metadata->isCoversClass()) {
-                        $type = 'Class';
-                    } else {
-                        $type = 'Function';
-                    }
-
-                    throw new InvalidCoversTargetException(
-                        sprintf(
-                            '%s "%s" is not a valid target for code coverage',
-                            $type,
-                            $metadata->asStringForCodeUnitMapper(),
-                        ),
-                        $e->getCode(),
-                        $e,
-                    );
-                }
-            } elseif ($metadata->isCovers()) {
-                assert($metadata instanceof Covers);
-
-                $target = $metadata->target();
-
-                if (interface_exists($target)) {
-                    throw new InvalidCoversTargetException(
-                        sprintf(
-                            'Trying to @cover interface "%s".',
-                            $target,
-                        ),
-                    );
-                }
-
-                if ($classShortcut !== null && str_starts_with($target, '::')) {
-                    $target = $classShortcut . $target;
-                }
-
-                try {
-                    $codeUnits = $codeUnits->mergeWith($mapper->stringToCodeUnits($target));
-                } catch (InvalidCodeUnitException $e) {
-                    throw new InvalidCoversTargetException(
-                        sprintf(
-                            '"@covers %s" is invalid',
-                            $target,
-                        ),
-                        $e->getCode(),
-                        $e,
-                    );
-                }
-            }
-        }
-
-        return $mapper->codeUnitsToSourceLines($codeUnits);
     }
 
     /**
-     * @psalm-param class-string $className
-     * @psalm-param non-empty-string $methodName
-     *
-     * @psalm-return array<string,list<int>>
-     *
-     * @throws CodeCoverageException
+     * @psalm-assert-if-true !null $this->instance
      */
-    public function linesToBeUsed(string $className, string $methodName): array
+    public function isActive(): bool
     {
-        $metadataForClass = Registry::parser()->forClass($className);
-        $classShortcut    = null;
+        return $this->codeCoverage !== null;
+    }
 
-        if ($metadataForClass->isUsesDefaultClass()->isNotEmpty()) {
-            if (count($metadataForClass->isUsesDefaultClass()) > 1) {
-                throw new CodeCoverageException(
+    public function codeCoverage(): \SebastianBergmann\CodeCoverage\CodeCoverage
+    {
+        return $this->codeCoverage;
+    }
+
+    public function driver(): Driver
+    {
+        return $this->driver;
+    }
+
+    /**
+     * @throws MoreThanOneDataSetFromDataProviderException
+     * @throws NoDataSetFromDataProviderException
+     */
+    public function start(TestCase $test): void
+    {
+        if ($this->collecting) {
+            return;
+        }
+
+        $size = TestSize::unknown();
+
+        if ($test->size()->isSmall()) {
+            $size = TestSize::small();
+        } elseif ($test->size()->isMedium()) {
+            $size = TestSize::medium();
+        } elseif ($test->size()->isLarge()) {
+            $size = TestSize::large();
+        }
+
+        $this->test = $test;
+
+        $this->codeCoverage->start(
+            $test->valueObjectForEvents()->id(),
+            $size,
+        );
+
+        $this->collecting = true;
+    }
+
+    public function stop(bool $append = true, array|false $linesToBeCovered = [], array $linesToBeUsed = []): void
+    {
+        if (!$this->collecting) {
+            return;
+        }
+
+        $status = TestStatus::unknown();
+
+        if ($this->test !== null) {
+            if ($this->test->status()->isSuccess()) {
+                $status = TestStatus::success();
+            } else {
+                $status = TestStatus::failure();
+            }
+        }
+
+        /* @noinspection UnusedFunctionResultInspection */
+        $this->codeCoverage->stop($append, $status, $linesToBeCovered, $linesToBeUsed, $this->linesToBeIgnored);
+
+        $this->test       = null;
+        $this->collecting = false;
+    }
+
+    public function deactivate(): void
+    {
+        $this->driver       = null;
+        $this->codeCoverage = null;
+        $this->test         = null;
+    }
+
+    public function generateReports(Printer $printer, Configuration $configuration): void
+    {
+        if (!$this->isActive()) {
+            return;
+        }
+
+        if ($configuration->hasCoveragePhp()) {
+            $this->codeCoverageGenerationStart($printer, 'PHP');
+
+            try {
+                $writer = new PhpReport;
+                $writer->process($this->codeCoverage(), $configuration->coveragePhp());
+
+                $this->codeCoverageGenerationSucceeded($printer);
+
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
+            }
+        }
+
+        if ($configuration->hasCoverageClover()) {
+            $this->codeCoverageGenerationStart($printer, 'Clover XML');
+
+            try {
+                $writer = new CloverReport;
+                $writer->process($this->codeCoverage(), $configuration->coverageClover());
+
+                $this->codeCoverageGenerationSucceeded($printer);
+
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
+            }
+        }
+
+        if ($configuration->hasCoverageCobertura()) {
+            $this->codeCoverageGenerationStart($printer, 'Cobertura XML');
+
+            try {
+                $writer = new CoberturaReport;
+                $writer->process($this->codeCoverage(), $configuration->coverageCobertura());
+
+                $this->codeCoverageGenerationSucceeded($printer);
+
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
+            }
+        }
+
+        if ($configuration->hasCoverageCrap4j()) {
+            $this->codeCoverageGenerationStart($printer, 'Crap4J XML');
+
+            try {
+                $writer = new Crap4jReport($configuration->coverageCrap4jThreshold());
+                $writer->process($this->codeCoverage(), $configuration->coverageCrap4j());
+
+                $this->codeCoverageGenerationSucceeded($printer);
+
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
+            }
+        }
+
+        if ($configuration->hasCoverageHtml()) {
+            $this->codeCoverageGenerationStart($printer, 'HTML');
+
+            try {
+                $customCssFile = CustomCssFile::default();
+
+                if ($configuration->hasCoverageHtmlCustomCssFile()) {
+                    $customCssFile = CustomCssFile::from($configuration->coverageHtmlCustomCssFile());
+                }
+
+                $writer = new HtmlReport(
                     sprintf(
-                        'More than one @usesDefaultClass annotation for class or interface "%s"',
-                        $className,
+                        ' and <a href="https://phpunit.de/">PHPUnit %s</a>',
+                        Version::id(),
                     ),
+                    Colors::from(
+                        $configuration->coverageHtmlColorSuccessLow(),
+                        $configuration->coverageHtmlColorSuccessMedium(),
+                        $configuration->coverageHtmlColorSuccessHigh(),
+                        $configuration->coverageHtmlColorWarning(),
+                        $configuration->coverageHtmlColorDanger(),
+                    ),
+                    Thresholds::from(
+                        $configuration->coverageHtmlLowUpperBound(),
+                        $configuration->coverageHtmlHighLowerBound(),
+                    ),
+                    $customCssFile,
                 );
-            }
 
-            $metadata = $metadataForClass->isUsesDefaultClass()->asArray()[0];
+                $writer->process($this->codeCoverage(), $configuration->coverageHtml());
 
-            assert($metadata instanceof UsesDefaultClass);
+                $this->codeCoverageGenerationSucceeded($printer);
 
-            $classShortcut = $metadata->className();
-        }
-
-        $codeUnits = CodeUnitCollection::fromList();
-        $mapper    = new Mapper;
-
-        foreach (Registry::parser()->forClassAndMethod($className, $methodName) as $metadata) {
-            if ($metadata->isUsesClass() || $metadata->isUsesFunction()) {
-                assert($metadata instanceof UsesClass || $metadata instanceof UsesFunction);
-
-                try {
-                    $codeUnits = $codeUnits->mergeWith(
-                        $mapper->stringToCodeUnits($metadata->asStringForCodeUnitMapper()),
-                    );
-                } catch (InvalidCodeUnitException $e) {
-                    if ($metadata->isUsesClass()) {
-                        $type = 'Class';
-                    } else {
-                        $type = 'Function';
-                    }
-
-                    throw new InvalidCoversTargetException(
-                        sprintf(
-                            '%s "%s" is not a valid target for code coverage',
-                            $type,
-                            $metadata->asStringForCodeUnitMapper(),
-                        ),
-                        $e->getCode(),
-                        $e,
-                    );
-                }
-            } elseif ($metadata->isUses()) {
-                assert($metadata instanceof Uses);
-
-                $target = $metadata->target();
-
-                if ($classShortcut !== null && str_starts_with($target, '::')) {
-                    $target = $classShortcut . $target;
-                }
-
-                try {
-                    $codeUnits = $codeUnits->mergeWith($mapper->stringToCodeUnits($target));
-                } catch (InvalidCodeUnitException $e) {
-                    throw new InvalidCoversTargetException(
-                        sprintf(
-                            '"@uses %s" is invalid',
-                            $target,
-                        ),
-                        $e->getCode(),
-                        $e,
-                    );
-                }
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
             }
         }
 
-        return $mapper->codeUnitsToSourceLines($codeUnits);
+        if ($configuration->hasCoverageText()) {
+            $processor = new TextReport(
+                Thresholds::default(),
+                $configuration->coverageTextShowUncoveredFiles(),
+                $configuration->coverageTextShowOnlySummary(),
+            );
+
+            $textReport = $processor->process($this->codeCoverage(), $configuration->colors());
+
+            if ($configuration->coverageText() === 'php://stdout') {
+                $printer->print($textReport);
+            } else {
+                file_put_contents($configuration->coverageText(), $textReport);
+            }
+        }
+
+        if ($configuration->hasCoverageXml()) {
+            $this->codeCoverageGenerationStart($printer, 'PHPUnit XML');
+
+            try {
+                $writer = new XmlReport(Version::id());
+                $writer->process($this->codeCoverage(), $configuration->coverageXml());
+
+                $this->codeCoverageGenerationSucceeded($printer);
+
+                unset($writer);
+            } catch (CodeCoverageException $e) {
+                $this->codeCoverageGenerationFailed($printer, $e);
+            }
+        }
+    }
+
+    /**
+     * @psalm-param array<string,list<int>> $linesToBeIgnored
+     */
+    public function ignoreLines(array $linesToBeIgnored): void
+    {
+        $this->linesToBeIgnored = $linesToBeIgnored;
     }
 
     /**
      * @psalm-return array<string,list<int>>
      */
-    public function linesToBeIgnored(TestSuite $testSuite): array
+    public function linesToBeIgnored(): array
     {
-        $codeUnits = CodeUnitCollection::fromList();
-        $mapper    = new Mapper;
+        return $this->linesToBeIgnored;
+    }
 
-        foreach ($this->testCaseClassesIn($testSuite) as $testCaseClassName) {
-            $codeUnits = $codeUnits->mergeWith(
-                $this->codeUnitsIgnoredBy($testCaseClassName),
+    private function activate(Filter $filter, bool $pathCoverage): void
+    {
+        try {
+            if ($pathCoverage) {
+                $this->driver = (new Selector)->forLineAndPathCoverage($filter);
+            } else {
+                $this->driver = (new Selector)->forLineCoverage($filter);
+            }
+
+            $this->codeCoverage = new \SebastianBergmann\CodeCoverage\CodeCoverage(
+                $this->driver,
+                $filter,
+            );
+        } catch (CodeCoverageException $e) {
+            EventFacade::emitter()->testRunnerTriggeredWarning(
+                $e->getMessage(),
             );
         }
+    }
 
-        return $mapper->codeUnitsToSourceLines($codeUnits);
+    private function codeCoverageGenerationStart(Printer $printer, string $format): void
+    {
+        $printer->print(
+            sprintf(
+                "\nGenerating code coverage report in %s format ... ",
+                $format,
+            ),
+        );
+
+        $this->timer()->start();
     }
 
     /**
-     * @psalm-param class-string $className
-     * @psalm-param non-empty-string $methodName
+     * @throws NoActiveTimerException
      */
-    public function shouldCodeCoverageBeCollectedFor(string $className, string $methodName): bool
+    private function codeCoverageGenerationSucceeded(Printer $printer): void
     {
-        $metadataForClass  = Registry::parser()->forClass($className);
-        $metadataForMethod = Registry::parser()->forMethod($className, $methodName);
-
-        if ($metadataForMethod->isCoversNothing()->isNotEmpty()) {
-            return false;
-        }
-
-        if ($metadataForMethod->isCovers()->isNotEmpty() ||
-            $metadataForMethod->isCoversClass()->isNotEmpty() ||
-            $metadataForMethod->isCoversFunction()->isNotEmpty()) {
-            return true;
-        }
-
-        if ($metadataForClass->isCoversNothing()->isNotEmpty()) {
-            return false;
-        }
-
-        return true;
+        $printer->print(
+            sprintf(
+                "done [%s]\n",
+                $this->timer()->stop()->asString(),
+            ),
+        );
     }
 
     /**
-     * @psalm-return list<class-string>
+     * @throws NoActiveTimerException
      */
-    private function testCaseClassesIn(TestSuite $testSuite): array
+    private function codeCoverageGenerationFailed(Printer $printer, CodeCoverageException $e): void
     {
-        $classNames = [];
-
-        foreach (new RecursiveIteratorIterator($testSuite) as $test) {
-            $classNames[] = $test::class;
-        }
-
-        return array_values(array_unique($classNames));
+        $printer->print(
+            sprintf(
+                "failed [%s]\n%s\n",
+                $this->timer()->stop()->asString(),
+                $e->getMessage(),
+            ),
+        );
     }
 
-    /**
-     * @psalm-param class-string $className
-     */
-    private function codeUnitsIgnoredBy(string $className): CodeUnitCollection
+    private function timer(): Timer
     {
-        $codeUnits = CodeUnitCollection::fromList();
-        $mapper    = new Mapper;
-
-        foreach (Registry::parser()->forClass($className) as $metadata) {
-            if ($metadata instanceof IgnoreClassForCodeCoverage) {
-                $codeUnits = $codeUnits->mergeWith(
-                    $mapper->stringToCodeUnits($metadata->className()),
-                );
-            }
-
-            if ($metadata instanceof IgnoreMethodForCodeCoverage) {
-                $codeUnits = $codeUnits->mergeWith(
-                    $mapper->stringToCodeUnits($metadata->className() . '::' . $metadata->methodName()),
-                );
-            }
-
-            if ($metadata instanceof IgnoreFunctionForCodeCoverage) {
-                $codeUnits = $codeUnits->mergeWith(
-                    $mapper->stringToCodeUnits('::' . $metadata->functionName()),
-                );
-            }
+        if ($this->timer === null) {
+            $this->timer = new Timer;
         }
 
-        return $codeUnits;
+        return $this->timer;
     }
 }

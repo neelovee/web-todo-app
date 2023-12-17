@@ -7,7 +7,7 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Logging\TeamCity;
+namespace PHPUnit\TestRunner\TestResult;
 
 use PHPUnit\Event\TestSuite\Started;
 use PHPUnit\Event\TestSuite\StartedSubscriber;
@@ -19,6 +19,6 @@ final class TestSuiteStartedSubscriber extends Subscriber implements StartedSubs
 {
     public function notify(Started $event): void
     {
-        $this->logger()->testSuiteStarted($event);
+        $this->collector()->testSuiteStarted($event);
     }
 }

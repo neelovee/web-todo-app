@@ -7,7 +7,7 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Logging\TestDox;
+namespace PHPUnit\TestRunner\TestResult;
 
 use PHPUnit\Event\Test\Prepared;
 use PHPUnit\Event\Test\PreparedSubscriber;
@@ -19,6 +19,6 @@ final class TestPreparedSubscriber extends Subscriber implements PreparedSubscri
 {
     public function notify(Prepared $event): void
     {
-        $this->collector()->testPrepared($event);
+        $this->collector()->testPrepared();
     }
 }
