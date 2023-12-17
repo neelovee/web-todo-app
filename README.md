@@ -1,34 +1,55 @@
-<p align="center"><img width="386" height="68" src="/art/logo.svg" alt="Laravel Prompts"></p>
+# phpunit/php-code-coverage
 
-<p align="center">
-<a href="https://github.com/laravel/prompts/actions"><img src="https://github.com/laravel/prompts/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/prompts"><img src="https://img.shields.io/packagist/dt/laravel/prompts" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/prompts"><img src="https://img.shields.io/packagist/v/laravel/prompts" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/prompts"><img src="https://img.shields.io/packagist/l/laravel/prompts" alt="License"></a>
-</p>
+[![Latest Stable Version](https://poser.pugx.org/phpunit/php-code-coverage/v/stable.png)](https://packagist.org/packages/phpunit/php-code-coverage)
+[![CI Status](https://github.com/sebastianbergmann/php-code-coverage/workflows/CI/badge.svg)](https://github.com/sebastianbergmann/php-code-coverage/actions)
+[![Type Coverage](https://shepherd.dev/github/sebastianbergmann/php-code-coverage/coverage.svg)](https://shepherd.dev/github/sebastianbergmann/php-code-coverage)
+[![codecov](https://codecov.io/gh/sebastianbergmann/php-code-coverage/branch/main/graph/badge.svg)](https://codecov.io/gh/sebastianbergmann/php-code-coverage)
 
-## Introduction
+Provides collection, processing, and rendering functionality for PHP code coverage information.
 
-Laravel Prompts is a PHP package for adding beautiful and user-friendly forms to your command-line applications, with browser-like features including placeholder text and validation.
+## Installation
 
-Laravel Prompts is perfect for accepting user input in your [Artisan console commands](https://laravel.com/docs/artisan#writing-commands), but it may also be used in any command-line PHP project.
+You can add this library as a local, per-project dependency to your project using [Composer](https://getcomposer.org/):
 
-## Official Documentation
+```
+composer require phpunit/php-code-coverage
+```
 
-Documentation for Laravel Prompts can be found on the [Laravel website](https://laravel.com/docs/prompts).
+If you only need this library during development, for instance to run your project's test suite, then you should add it as a development-time dependency:
 
-## Contributing
+```
+composer require --dev phpunit/php-code-coverage
+```
 
-Thank you for considering contributing to Laravel Prompts! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Usage
 
-## Code of Conduct
+```php
+<?php declare(strict_types=1);
+use SebastianBergmann\CodeCoverage\Filter;
+use SebastianBergmann\CodeCoverage\Driver\Selector;
+use SebastianBergmann\CodeCoverage\CodeCoverage;
+use SebastianBergmann\CodeCoverage\Report\Html\Facade as HtmlReport;
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+$filter = new Filter;
 
-## Security Vulnerabilities
+$filter->includeFiles(
+    [
+        '/path/to/file.php',
+        '/path/to/another_file.php',
+    ]
+);
 
-Please review [our security policy](https://github.com/laravel/prompts/security/policy) on how to report security vulnerabilities.
+$coverage = new CodeCoverage(
+    (new Selector)->forLineCoverage($filter),
+    $filter
+);
 
-## License
+$coverage->start('<name of test>');
 
-Laravel Prompts is open-sourced software licensed under the [MIT license](LICENSE.md).
+// ...
+
+$coverage->stop();
+
+
+(new HtmlReport)->process($coverage, '/tmp/code-coverage-report');
+```
