@@ -7,16 +7,20 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
-final class CoversNothing
+final class CoversNothing extends Metadata
 {
+    /**
+     * @psalm-assert-if-true CoversNothing $this
+     */
+    public function isCoversNothing(): bool
+    {
+        return true;
+    }
 }

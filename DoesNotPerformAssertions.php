@@ -7,16 +7,20 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
-final class DoesNotPerformAssertions
+final class DoesNotPerformAssertions extends Metadata
 {
+    /**
+     * @psalm-assert-if-true DoesNotPerformAssertions $this
+     */
+    public function isDoesNotPerformAssertions(): bool
+    {
+        return true;
+    }
 }

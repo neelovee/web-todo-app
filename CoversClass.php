@@ -7,17 +7,14 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_CLASS | Attribute::IS_REPEATABLE)]
-final class CoversClass
+final class CoversClass extends Metadata
 {
     /**
      * @psalm-var class-string
@@ -25,17 +22,38 @@ final class CoversClass
     private readonly string $className;
 
     /**
+     * @psalm-param 0|1 $level
      * @psalm-param class-string $className
      */
-    public function __construct(string $className)
+    protected function __construct(int $level, string $className)
     {
+        parent::__construct($level);
+
         $this->className = $className;
+    }
+
+    /**
+     * @psalm-assert-if-true CoversClass $this
+     */
+    public function isCoversClass(): bool
+    {
+        return true;
     }
 
     /**
      * @psalm-return class-string
      */
     public function className(): string
+    {
+        return $this->className;
+    }
+
+    /**
+     * @psalm-return class-string
+     *
+     * @internal This method is not covered by the backward compatibility promise for PHPUnit
+     */
+    public function asStringForCodeUnitMapper(): string
     {
         return $this->className;
     }

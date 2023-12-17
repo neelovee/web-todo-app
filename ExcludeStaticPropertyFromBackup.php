@@ -7,17 +7,14 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD | Attribute::IS_REPEATABLE)]
-final class ExcludeStaticPropertyFromBackup
+final class ExcludeStaticPropertyFromBackup extends Metadata
 {
     /**
      * @psalm-var class-string
@@ -30,13 +27,24 @@ final class ExcludeStaticPropertyFromBackup
     private readonly string $propertyName;
 
     /**
+     * @psalm-param 0|1 $level
      * @psalm-param class-string $className
      * @psalm-param non-empty-string $propertyName
      */
-    public function __construct(string $className, string $propertyName)
+    protected function __construct(int $level, string $className, string $propertyName)
     {
+        parent::__construct($level);
+
         $this->className    = $className;
         $this->propertyName = $propertyName;
+    }
+
+    /**
+     * @psalm-assert-if-true ExcludeStaticPropertyFromBackup $this
+     */
+    public function isExcludeStaticPropertyFromBackup(): bool
+    {
+        return true;
     }
 
     /**

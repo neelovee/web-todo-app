@@ -7,14 +7,20 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework;
-
-use Countable;
+namespace PHPUnit\Metadata;
 
 /**
+ * @psalm-immutable
+ *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-interface Test extends Countable
+final class Test extends Metadata
 {
-    public function run(): void;
+    /**
+     * @psalm-assert-if-true Test $this
+     */
+    public function isTest(): bool
+    {
+        return true;
+    }
 }

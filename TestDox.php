@@ -7,37 +7,44 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Event\Code;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-final class TestDox
+final class TestDox extends Metadata
 {
-    private readonly string $prettifiedClassName;
-    private readonly string $prettifiedMethodName;
-    private readonly string $prettifiedAndColorizedMethodName;
+    /**
+     * @psalm-var non-empty-string
+     */
+    private readonly string $text;
 
-    public function __construct(string $prettifiedClassName, string $prettifiedMethodName, string $prettifiedAndColorizedMethodName)
+    /**
+     * @psalm-param 0|1 $level
+     * @psalm-param non-empty-string $text
+     */
+    protected function __construct(int $level, string $text)
     {
-        $this->prettifiedClassName              = $prettifiedClassName;
-        $this->prettifiedMethodName             = $prettifiedMethodName;
-        $this->prettifiedAndColorizedMethodName = $prettifiedAndColorizedMethodName;
+        parent::__construct($level);
+
+        $this->text = $text;
     }
 
-    public function prettifiedClassName(): string
+    /**
+     * @psalm-assert-if-true TestDox $this
+     */
+    public function isTestDox(): bool
     {
-        return $this->prettifiedClassName;
+        return true;
     }
 
-    public function prettifiedMethodName(bool $colorize = false): string
+    /**
+     * @psalm-return non-empty-string
+     */
+    public function text(): string
     {
-        if ($colorize) {
-            return $this->prettifiedAndColorizedMethodName;
-        }
-
-        return $this->prettifiedMethodName;
+        return $this->text;
     }
 }

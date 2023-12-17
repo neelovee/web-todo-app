@@ -7,36 +7,44 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD | Attribute::IS_REPEATABLE)]
-final class Group
+final class Group extends Metadata
 {
     /**
      * @psalm-var non-empty-string
      */
-    private readonly string $name;
+    private readonly string $groupName;
 
     /**
-     * @psalm-param non-empty-string $name
+     * @psalm-param 0|1 $level
+     * @psalm-param non-empty-string $groupName
      */
-    public function __construct(string $name)
+    protected function __construct(int $level, string $groupName)
     {
-        $this->name = $name;
+        parent::__construct($level);
+
+        $this->groupName = $groupName;
+    }
+
+    /**
+     * @psalm-assert-if-true Group $this
+     */
+    public function isGroup(): bool
+    {
+        return true;
     }
 
     /**
      * @psalm-return non-empty-string
      */
-    public function name(): string
+    public function groupName(): string
     {
-        return $this->name;
+        return $this->groupName;
     }
 }

@@ -7,29 +7,41 @@
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace PHPUnit\Framework\Attributes;
-
-use Attribute;
+namespace PHPUnit\Metadata;
 
 /**
  * @psalm-immutable
  *
  * @no-named-arguments Parameter names are not covered by the backward compatibility promise for PHPUnit
  */
-#[Attribute(Attribute::TARGET_METHOD | Attribute::IS_REPEATABLE)]
-final class DependsOnClass
+final class DependsOnClass extends Metadata
 {
     /**
      * @psalm-var class-string
      */
     private readonly string $className;
+    private readonly bool $deepClone;
+    private readonly bool $shallowClone;
 
     /**
+     * @psalm-param 0|1 $level
      * @psalm-param class-string $className
      */
-    public function __construct(string $className)
+    protected function __construct(int $level, string $className, bool $deepClone, bool $shallowClone)
     {
-        $this->className = $className;
+        parent::__construct($level);
+
+        $this->className    = $className;
+        $this->deepClone    = $deepClone;
+        $this->shallowClone = $shallowClone;
+    }
+
+    /**
+     * @psalm-assert-if-true DependsOnClass $this
+     */
+    public function isDependsOnClass(): bool
+    {
+        return true;
     }
 
     /**
@@ -38,5 +50,15 @@ final class DependsOnClass
     public function className(): string
     {
         return $this->className;
+    }
+
+    public function deepClone(): bool
+    {
+        return $this->deepClone;
+    }
+
+    public function shallowClone(): bool
+    {
+        return $this->shallowClone;
     }
 }

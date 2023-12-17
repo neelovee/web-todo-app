@@ -1,631 +1,314 @@
 <?php declare(strict_types=1);
 /*
- * This file is part of phpunit/php-code-coverage.
+ * This file is part of PHPUnit.
  *
  * (c) Sebastian Bergmann <sebastian@phpunit.de>
  *
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
-namespace SebastianBergmann\CodeCoverage;
+namespace PHPUnit\Metadata\Api;
 
-use function array_diff;
-use function array_diff_key;
-use function array_flip;
-use function array_keys;
-use function array_merge;
-use function array_merge_recursive;
 use function array_unique;
+use function array_values;
+use function assert;
 use function count;
-use function explode;
-use function is_array;
-use function is_file;
-use function sort;
-use ReflectionClass;
-use SebastianBergmann\CodeCoverage\Data\ProcessedCodeCoverageData;
-use SebastianBergmann\CodeCoverage\Data\RawCodeCoverageData;
-use SebastianBergmann\CodeCoverage\Driver\Driver;
-use SebastianBergmann\CodeCoverage\Node\Builder;
-use SebastianBergmann\CodeCoverage\Node\Directory;
-use SebastianBergmann\CodeCoverage\StaticAnalysis\CachingFileAnalyser;
-use SebastianBergmann\CodeCoverage\StaticAnalysis\FileAnalyser;
-use SebastianBergmann\CodeCoverage\StaticAnalysis\ParsingFileAnalyser;
-use SebastianBergmann\CodeCoverage\Test\TestSize\TestSize;
-use SebastianBergmann\CodeCoverage\Test\TestStatus\TestStatus;
-use SebastianBergmann\CodeUnitReverseLookup\Wizard;
+use function interface_exists;
+use function sprintf;
+use function str_starts_with;
+use PHPUnit\Framework\CodeCoverageException;
+use PHPUnit\Framework\InvalidCoversTargetException;
+use PHPUnit\Framework\TestSuite;
+use PHPUnit\Metadata\Covers;
+use PHPUnit\Metadata\CoversClass;
+use PHPUnit\Metadata\CoversDefaultClass;
+use PHPUnit\Metadata\CoversFunction;
+use PHPUnit\Metadata\IgnoreClassForCodeCoverage;
+use PHPUnit\Metadata\IgnoreFunctionForCodeCoverage;
+use PHPUnit\Metadata\IgnoreMethodForCodeCoverage;
+use PHPUnit\Metadata\Parser\Registry;
+use PHPUnit\Metadata\Uses;
+use PHPUnit\Metadata\UsesClass;
+use PHPUnit\Metadata\UsesDefaultClass;
+use PHPUnit\Metadata\UsesFunction;
+use RecursiveIteratorIterator;
+use SebastianBergmann\CodeUnit\CodeUnitCollection;
+use SebastianBergmann\CodeUnit\InvalidCodeUnitException;
+use SebastianBergmann\CodeUnit\Mapper;
 
 /**
- * Provides collection functionality for PHP code coverage information.
- *
- * @psalm-type TestType = array{
- *     size: string,
- *     status: string,
- * }
+ * @internal This class is not covered by the backward compatibility promise for PHPUnit
  */
 final class CodeCoverage
 {
-    private const UNCOVERED_FILES = 'UNCOVERED_FILES';
-    private readonly Driver $driver;
-    private readonly Filter $filter;
-    private readonly Wizard $wizard;
-    private bool $checkForUnintentionallyCoveredCode = false;
-    private bool $includeUncoveredFiles              = true;
-    private bool $ignoreDeprecatedCode               = false;
-    private ?string $currentId                       = null;
-    private ?TestSize $currentSize                   = null;
-    private ProcessedCodeCoverageData $data;
-    private bool $useAnnotationsForIgnoringCode = true;
-
     /**
-     * @psalm-var array<string,list<int>>
+     * @psalm-param class-string $className
+     * @psalm-param non-empty-string $methodName
+     *
+     * @psalm-return array<string,list<int>>|false
+     *
+     * @throws CodeCoverageException
      */
-    private array $linesToBeIgnored = [];
-
-    /**
-     * @psalm-var array<string, TestType>
-     */
-    private array $tests = [];
-
-    /**
-     * @psalm-var list<class-string>
-     */
-    private array $parentClassesExcludedFromUnintentionallyCoveredCodeCheck = [];
-    private ?FileAnalyser $analyser                                         = null;
-    private ?string $cacheDirectory                                         = null;
-    private ?Directory $cachedReport                                        = null;
-
-    public function __construct(Driver $driver, Filter $filter)
+    public function linesToBeCovered(string $className, string $methodName): array|false
     {
-        $this->driver = $driver;
-        $this->filter = $filter;
-        $this->data   = new ProcessedCodeCoverageData;
-        $this->wizard = new Wizard;
-    }
-
-    /**
-     * Returns the code coverage information as a graph of node objects.
-     */
-    public function getReport(): Directory
-    {
-        if ($this->cachedReport === null) {
-            $this->cachedReport = (new Builder($this->analyser()))->build($this);
+        if (!$this->shouldCodeCoverageBeCollectedFor($className, $methodName)) {
+            return false;
         }
 
-        return $this->cachedReport;
-    }
+        $metadataForClass = Registry::parser()->forClass($className);
+        $classShortcut    = null;
 
-    /**
-     * Clears collected code coverage data.
-     */
-    public function clear(): void
-    {
-        $this->currentId    = null;
-        $this->currentSize  = null;
-        $this->data         = new ProcessedCodeCoverageData;
-        $this->tests        = [];
-        $this->cachedReport = null;
-    }
+        if ($metadataForClass->isCoversDefaultClass()->isNotEmpty()) {
+            if (count($metadataForClass->isCoversDefaultClass()) > 1) {
+                throw new CodeCoverageException(
+                    sprintf(
+                        'More than one @coversDefaultClass annotation for class or interface "%s"',
+                        $className,
+                    ),
+                );
+            }
 
-    /**
-     * @internal
-     */
-    public function clearCache(): void
-    {
-        $this->cachedReport = null;
-    }
+            $metadata = $metadataForClass->isCoversDefaultClass()->asArray()[0];
 
-    /**
-     * Returns the filter object used.
-     */
-    public function filter(): Filter
-    {
-        return $this->filter;
-    }
+            assert($metadata instanceof CoversDefaultClass);
 
-    /**
-     * Returns the collected code coverage data.
-     */
-    public function getData(bool $raw = false): ProcessedCodeCoverageData
-    {
-        if (!$raw) {
-            if ($this->includeUncoveredFiles) {
-                $this->addUncoveredFilesFromFilter();
+            $classShortcut = $metadata->className();
+        }
+
+        $codeUnits = CodeUnitCollection::fromList();
+        $mapper    = new Mapper;
+
+        foreach (Registry::parser()->forClassAndMethod($className, $methodName) as $metadata) {
+            if ($metadata->isCoversClass() || $metadata->isCoversFunction()) {
+                assert($metadata instanceof CoversClass || $metadata instanceof CoversFunction);
+
+                try {
+                    $codeUnits = $codeUnits->mergeWith(
+                        $mapper->stringToCodeUnits($metadata->asStringForCodeUnitMapper()),
+                    );
+                } catch (InvalidCodeUnitException $e) {
+                    if ($metadata->isCoversClass()) {
+                        $type = 'Class';
+                    } else {
+                        $type = 'Function';
+                    }
+
+                    throw new InvalidCoversTargetException(
+                        sprintf(
+                            '%s "%s" is not a valid target for code coverage',
+                            $type,
+                            $metadata->asStringForCodeUnitMapper(),
+                        ),
+                        $e->getCode(),
+                        $e,
+                    );
+                }
+            } elseif ($metadata->isCovers()) {
+                assert($metadata instanceof Covers);
+
+                $target = $metadata->target();
+
+                if (interface_exists($target)) {
+                    throw new InvalidCoversTargetException(
+                        sprintf(
+                            'Trying to @cover interface "%s".',
+                            $target,
+                        ),
+                    );
+                }
+
+                if ($classShortcut !== null && str_starts_with($target, '::')) {
+                    $target = $classShortcut . $target;
+                }
+
+                try {
+                    $codeUnits = $codeUnits->mergeWith($mapper->stringToCodeUnits($target));
+                } catch (InvalidCodeUnitException $e) {
+                    throw new InvalidCoversTargetException(
+                        sprintf(
+                            '"@covers %s" is invalid',
+                            $target,
+                        ),
+                        $e->getCode(),
+                        $e,
+                    );
+                }
             }
         }
 
-        return $this->data;
+        return $mapper->codeUnitsToSourceLines($codeUnits);
     }
 
     /**
-     * Sets the coverage data.
-     */
-    public function setData(ProcessedCodeCoverageData $data): void
-    {
-        $this->data = $data;
-    }
-
-    /**
-     * @psalm-return array<string, TestType>
-     */
-    public function getTests(): array
-    {
-        return $this->tests;
-    }
-
-    /**
-     * @psalm-param array<string, TestType> $tests
-     */
-    public function setTests(array $tests): void
-    {
-        $this->tests = $tests;
-    }
-
-    public function start(string $id, TestSize $size = null, bool $clear = false): void
-    {
-        if ($clear) {
-            $this->clear();
-        }
-
-        $this->currentId   = $id;
-        $this->currentSize = $size;
-
-        $this->driver->start();
-
-        $this->cachedReport = null;
-    }
-
-    /**
-     * @psalm-param array<string,list<int>> $linesToBeIgnored
-     */
-    public function stop(bool $append = true, TestStatus $status = null, array|false $linesToBeCovered = [], array $linesToBeUsed = [], array $linesToBeIgnored = []): RawCodeCoverageData
-    {
-        $data = $this->driver->stop();
-
-        $this->linesToBeIgnored = array_merge_recursive(
-            $this->linesToBeIgnored,
-            $linesToBeIgnored
-        );
-
-        $this->append($data, null, $append, $status, $linesToBeCovered, $linesToBeUsed, $linesToBeIgnored);
-
-        $this->currentId    = null;
-        $this->currentSize  = null;
-        $this->cachedReport = null;
-
-        return $data;
-    }
-
-    /**
-     * @psalm-param array<string,list<int>> $linesToBeIgnored
+     * @psalm-param class-string $className
+     * @psalm-param non-empty-string $methodName
      *
-     * @throws ReflectionException
-     * @throws TestIdMissingException
-     * @throws UnintentionallyCoveredCodeException
+     * @psalm-return array<string,list<int>>
+     *
+     * @throws CodeCoverageException
      */
-    public function append(RawCodeCoverageData $rawData, string $id = null, bool $append = true, TestStatus $status = null, array|false $linesToBeCovered = [], array $linesToBeUsed = [], array $linesToBeIgnored = []): void
+    public function linesToBeUsed(string $className, string $methodName): array
     {
-        if ($id === null) {
-            $id = $this->currentId;
+        $metadataForClass = Registry::parser()->forClass($className);
+        $classShortcut    = null;
+
+        if ($metadataForClass->isUsesDefaultClass()->isNotEmpty()) {
+            if (count($metadataForClass->isUsesDefaultClass()) > 1) {
+                throw new CodeCoverageException(
+                    sprintf(
+                        'More than one @usesDefaultClass annotation for class or interface "%s"',
+                        $className,
+                    ),
+                );
+            }
+
+            $metadata = $metadataForClass->isUsesDefaultClass()->asArray()[0];
+
+            assert($metadata instanceof UsesDefaultClass);
+
+            $classShortcut = $metadata->className();
         }
 
-        if ($id === null) {
-            throw new TestIdMissingException;
+        $codeUnits = CodeUnitCollection::fromList();
+        $mapper    = new Mapper;
+
+        foreach (Registry::parser()->forClassAndMethod($className, $methodName) as $metadata) {
+            if ($metadata->isUsesClass() || $metadata->isUsesFunction()) {
+                assert($metadata instanceof UsesClass || $metadata instanceof UsesFunction);
+
+                try {
+                    $codeUnits = $codeUnits->mergeWith(
+                        $mapper->stringToCodeUnits($metadata->asStringForCodeUnitMapper()),
+                    );
+                } catch (InvalidCodeUnitException $e) {
+                    if ($metadata->isUsesClass()) {
+                        $type = 'Class';
+                    } else {
+                        $type = 'Function';
+                    }
+
+                    throw new InvalidCoversTargetException(
+                        sprintf(
+                            '%s "%s" is not a valid target for code coverage',
+                            $type,
+                            $metadata->asStringForCodeUnitMapper(),
+                        ),
+                        $e->getCode(),
+                        $e,
+                    );
+                }
+            } elseif ($metadata->isUses()) {
+                assert($metadata instanceof Uses);
+
+                $target = $metadata->target();
+
+                if ($classShortcut !== null && str_starts_with($target, '::')) {
+                    $target = $classShortcut . $target;
+                }
+
+                try {
+                    $codeUnits = $codeUnits->mergeWith($mapper->stringToCodeUnits($target));
+                } catch (InvalidCodeUnitException $e) {
+                    throw new InvalidCoversTargetException(
+                        sprintf(
+                            '"@uses %s" is invalid',
+                            $target,
+                        ),
+                        $e->getCode(),
+                        $e,
+                    );
+                }
+            }
         }
 
-        $this->cachedReport = null;
-
-        if ($status === null) {
-            $status = TestStatus::unknown();
-        }
-
-        $size = $this->currentSize;
-
-        if ($size === null) {
-            $size = TestSize::unknown();
-        }
-
-        $this->applyFilter($rawData);
-
-        $this->applyExecutableLinesFilter($rawData);
-
-        if ($this->useAnnotationsForIgnoringCode) {
-            $this->applyIgnoredLinesFilter($rawData, $linesToBeIgnored);
-        }
-
-        $this->data->initializeUnseenData($rawData);
-
-        if (!$append) {
-            return;
-        }
-
-        if ($id === self::UNCOVERED_FILES) {
-            return;
-        }
-
-        $this->applyCoversAndUsesFilter(
-            $rawData,
-            $linesToBeCovered,
-            $linesToBeUsed,
-            $size
-        );
-
-        if (empty($rawData->lineCoverage())) {
-            return;
-        }
-
-        $this->tests[$id] = [
-            'size'   => $size->asString(),
-            'status' => $status->asString(),
-        ];
-
-        $this->data->markCodeAsExecutedByTestCase($id, $rawData);
+        return $mapper->codeUnitsToSourceLines($codeUnits);
     }
 
     /**
-     * Merges the data from another instance.
+     * @psalm-return array<string,list<int>>
      */
-    public function merge(self $that): void
+    public function linesToBeIgnored(TestSuite $testSuite): array
     {
-        $this->filter->includeFiles(
-            $that->filter()->files()
-        );
+        $codeUnits = CodeUnitCollection::fromList();
+        $mapper    = new Mapper;
 
-        $this->data->merge($that->data);
-
-        $this->tests = array_merge($this->tests, $that->getTests());
-
-        $this->cachedReport = null;
-    }
-
-    public function enableCheckForUnintentionallyCoveredCode(): void
-    {
-        $this->checkForUnintentionallyCoveredCode = true;
-    }
-
-    public function disableCheckForUnintentionallyCoveredCode(): void
-    {
-        $this->checkForUnintentionallyCoveredCode = false;
-    }
-
-    public function includeUncoveredFiles(): void
-    {
-        $this->includeUncoveredFiles = true;
-    }
-
-    public function excludeUncoveredFiles(): void
-    {
-        $this->includeUncoveredFiles = false;
-    }
-
-    public function enableAnnotationsForIgnoringCode(): void
-    {
-        $this->useAnnotationsForIgnoringCode = true;
-    }
-
-    public function disableAnnotationsForIgnoringCode(): void
-    {
-        $this->useAnnotationsForIgnoringCode = false;
-    }
-
-    public function ignoreDeprecatedCode(): void
-    {
-        $this->ignoreDeprecatedCode = true;
-    }
-
-    public function doNotIgnoreDeprecatedCode(): void
-    {
-        $this->ignoreDeprecatedCode = false;
-    }
-
-    /**
-     * @psalm-assert-if-true !null $this->cacheDirectory
-     */
-    public function cachesStaticAnalysis(): bool
-    {
-        return $this->cacheDirectory !== null;
-    }
-
-    public function cacheStaticAnalysis(string $directory): void
-    {
-        $this->cacheDirectory = $directory;
-    }
-
-    public function doNotCacheStaticAnalysis(): void
-    {
-        $this->cacheDirectory = null;
-    }
-
-    /**
-     * @throws StaticAnalysisCacheNotConfiguredException
-     */
-    public function cacheDirectory(): string
-    {
-        if (!$this->cachesStaticAnalysis()) {
-            throw new StaticAnalysisCacheNotConfiguredException(
-                'The static analysis cache is not configured'
+        foreach ($this->testCaseClassesIn($testSuite) as $testCaseClassName) {
+            $codeUnits = $codeUnits->mergeWith(
+                $this->codeUnitsIgnoredBy($testCaseClassName),
             );
         }
 
-        return $this->cacheDirectory;
+        return $mapper->codeUnitsToSourceLines($codeUnits);
+    }
+
+    /**
+     * @psalm-param class-string $className
+     * @psalm-param non-empty-string $methodName
+     */
+    public function shouldCodeCoverageBeCollectedFor(string $className, string $methodName): bool
+    {
+        $metadataForClass  = Registry::parser()->forClass($className);
+        $metadataForMethod = Registry::parser()->forMethod($className, $methodName);
+
+        if ($metadataForMethod->isCoversNothing()->isNotEmpty()) {
+            return false;
+        }
+
+        if ($metadataForMethod->isCovers()->isNotEmpty() ||
+            $metadataForMethod->isCoversClass()->isNotEmpty() ||
+            $metadataForMethod->isCoversFunction()->isNotEmpty()) {
+            return true;
+        }
+
+        if ($metadataForClass->isCoversNothing()->isNotEmpty()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @psalm-return list<class-string>
+     */
+    private function testCaseClassesIn(TestSuite $testSuite): array
+    {
+        $classNames = [];
+
+        foreach (new RecursiveIteratorIterator($testSuite) as $test) {
+            $classNames[] = $test::class;
+        }
+
+        return array_values(array_unique($classNames));
     }
 
     /**
      * @psalm-param class-string $className
      */
-    public function excludeSubclassesOfThisClassFromUnintentionallyCoveredCodeCheck(string $className): void
+    private function codeUnitsIgnoredBy(string $className): CodeUnitCollection
     {
-        $this->parentClassesExcludedFromUnintentionallyCoveredCodeCheck[] = $className;
-    }
+        $codeUnits = CodeUnitCollection::fromList();
+        $mapper    = new Mapper;
 
-    public function enableBranchAndPathCoverage(): void
-    {
-        $this->driver->enableBranchAndPathCoverage();
-    }
-
-    public function disableBranchAndPathCoverage(): void
-    {
-        $this->driver->disableBranchAndPathCoverage();
-    }
-
-    public function collectsBranchAndPathCoverage(): bool
-    {
-        return $this->driver->collectsBranchAndPathCoverage();
-    }
-
-    public function detectsDeadCode(): bool
-    {
-        return $this->driver->detectsDeadCode();
-    }
-
-    /**
-     * @throws ReflectionException
-     * @throws UnintentionallyCoveredCodeException
-     */
-    private function applyCoversAndUsesFilter(RawCodeCoverageData $rawData, array|false $linesToBeCovered, array $linesToBeUsed, TestSize $size): void
-    {
-        if ($linesToBeCovered === false) {
-            $rawData->clear();
-
-            return;
-        }
-
-        if (empty($linesToBeCovered)) {
-            return;
-        }
-
-        if ($this->checkForUnintentionallyCoveredCode && !$size->isMedium() && !$size->isLarge()) {
-            $this->performUnintentionallyCoveredCodeCheck($rawData, $linesToBeCovered, $linesToBeUsed);
-        }
-
-        $rawLineData         = $rawData->lineCoverage();
-        $filesWithNoCoverage = array_diff_key($rawLineData, $linesToBeCovered);
-
-        foreach (array_keys($filesWithNoCoverage) as $fileWithNoCoverage) {
-            $rawData->removeCoverageDataForFile($fileWithNoCoverage);
-        }
-
-        if (is_array($linesToBeCovered)) {
-            foreach ($linesToBeCovered as $fileToBeCovered => $includedLines) {
-                $rawData->keepLineCoverageDataOnlyForLines($fileToBeCovered, $includedLines);
-                $rawData->keepFunctionCoverageDataOnlyForLines($fileToBeCovered, $includedLines);
-            }
-        }
-    }
-
-    private function applyFilter(RawCodeCoverageData $data): void
-    {
-        if ($this->filter->isEmpty()) {
-            return;
-        }
-
-        foreach (array_keys($data->lineCoverage()) as $filename) {
-            if ($this->filter->isExcluded($filename)) {
-                $data->removeCoverageDataForFile($filename);
-            }
-        }
-    }
-
-    private function applyExecutableLinesFilter(RawCodeCoverageData $data): void
-    {
-        foreach (array_keys($data->lineCoverage()) as $filename) {
-            if (!$this->filter->isFile($filename)) {
-                continue;
-            }
-
-            $linesToBranchMap = $this->analyser()->executableLinesIn($filename);
-
-            $data->keepLineCoverageDataOnlyForLines(
-                $filename,
-                array_keys($linesToBranchMap)
-            );
-
-            $data->markExecutableLineByBranch(
-                $filename,
-                $linesToBranchMap
-            );
-        }
-    }
-
-    /**
-     * @psalm-param array<string,list<int>> $linesToBeIgnored
-     */
-    private function applyIgnoredLinesFilter(RawCodeCoverageData $data, array $linesToBeIgnored): void
-    {
-        foreach (array_keys($data->lineCoverage()) as $filename) {
-            if (!$this->filter->isFile($filename)) {
-                continue;
-            }
-
-            if (isset($linesToBeIgnored[$filename])) {
-                $data->removeCoverageDataForLines(
-                    $filename,
-                    $linesToBeIgnored[$filename]
+        foreach (Registry::parser()->forClass($className) as $metadata) {
+            if ($metadata instanceof IgnoreClassForCodeCoverage) {
+                $codeUnits = $codeUnits->mergeWith(
+                    $mapper->stringToCodeUnits($metadata->className()),
                 );
             }
 
-            $data->removeCoverageDataForLines(
-                $filename,
-                $this->analyser()->ignoredLinesFor($filename)
-            );
-        }
-    }
-
-    /**
-     * @throws UnintentionallyCoveredCodeException
-     */
-    private function addUncoveredFilesFromFilter(): void
-    {
-        $uncoveredFiles = array_diff(
-            $this->filter->files(),
-            $this->data->coveredFiles()
-        );
-
-        foreach ($uncoveredFiles as $uncoveredFile) {
-            if (is_file($uncoveredFile)) {
-                $this->append(
-                    RawCodeCoverageData::fromUncoveredFile(
-                        $uncoveredFile,
-                        $this->analyser()
-                    ),
-                    self::UNCOVERED_FILES,
-                    linesToBeIgnored: $this->linesToBeIgnored
-                );
-            }
-        }
-    }
-
-    /**
-     * @throws ReflectionException
-     * @throws UnintentionallyCoveredCodeException
-     */
-    private function performUnintentionallyCoveredCodeCheck(RawCodeCoverageData $data, array $linesToBeCovered, array $linesToBeUsed): void
-    {
-        $allowedLines = $this->getAllowedLines(
-            $linesToBeCovered,
-            $linesToBeUsed
-        );
-
-        $unintentionallyCoveredUnits = [];
-
-        foreach ($data->lineCoverage() as $file => $_data) {
-            foreach ($_data as $line => $flag) {
-                if ($flag === 1 && !isset($allowedLines[$file][$line])) {
-                    $unintentionallyCoveredUnits[] = $this->wizard->lookup($file, $line);
-                }
-            }
-        }
-
-        $unintentionallyCoveredUnits = $this->processUnintentionallyCoveredUnits($unintentionallyCoveredUnits);
-
-        if (!empty($unintentionallyCoveredUnits)) {
-            throw new UnintentionallyCoveredCodeException(
-                $unintentionallyCoveredUnits
-            );
-        }
-    }
-
-    private function getAllowedLines(array $linesToBeCovered, array $linesToBeUsed): array
-    {
-        $allowedLines = [];
-
-        foreach (array_keys($linesToBeCovered) as $file) {
-            if (!isset($allowedLines[$file])) {
-                $allowedLines[$file] = [];
-            }
-
-            $allowedLines[$file] = array_merge(
-                $allowedLines[$file],
-                $linesToBeCovered[$file]
-            );
-        }
-
-        foreach (array_keys($linesToBeUsed) as $file) {
-            if (!isset($allowedLines[$file])) {
-                $allowedLines[$file] = [];
-            }
-
-            $allowedLines[$file] = array_merge(
-                $allowedLines[$file],
-                $linesToBeUsed[$file]
-            );
-        }
-
-        foreach (array_keys($allowedLines) as $file) {
-            $allowedLines[$file] = array_flip(
-                array_unique($allowedLines[$file])
-            );
-        }
-
-        return $allowedLines;
-    }
-
-    /**
-     * @param list<string> $unintentionallyCoveredUnits
-     *
-     * @throws ReflectionException
-     *
-     * @return list<string>
-     */
-    private function processUnintentionallyCoveredUnits(array $unintentionallyCoveredUnits): array
-    {
-        $unintentionallyCoveredUnits = array_unique($unintentionallyCoveredUnits);
-        $processed                   = [];
-
-        foreach ($unintentionallyCoveredUnits as $unintentionallyCoveredUnit) {
-            $tmp = explode('::', $unintentionallyCoveredUnit);
-
-            if (count($tmp) !== 2) {
-                $processed[] = $unintentionallyCoveredUnit;
-
-                continue;
-            }
-
-            try {
-                $class = new ReflectionClass($tmp[0]);
-
-                foreach ($this->parentClassesExcludedFromUnintentionallyCoveredCodeCheck as $parentClass) {
-                    if ($class->isSubclassOf($parentClass)) {
-                        continue 2;
-                    }
-                }
-            } catch (\ReflectionException $e) {
-                throw new ReflectionException(
-                    $e->getMessage(),
-                    $e->getCode(),
-                    $e
+            if ($metadata instanceof IgnoreMethodForCodeCoverage) {
+                $codeUnits = $codeUnits->mergeWith(
+                    $mapper->stringToCodeUnits($metadata->className() . '::' . $metadata->methodName()),
                 );
             }
 
-            $processed[] = $tmp[0];
+            if ($metadata instanceof IgnoreFunctionForCodeCoverage) {
+                $codeUnits = $codeUnits->mergeWith(
+                    $mapper->stringToCodeUnits('::' . $metadata->functionName()),
+                );
+            }
         }
 
-        $processed = array_unique($processed);
-
-        sort($processed);
-
-        return $processed;
-    }
-
-    private function analyser(): FileAnalyser
-    {
-        if ($this->analyser !== null) {
-            return $this->analyser;
-        }
-
-        $this->analyser = new ParsingFileAnalyser(
-            $this->useAnnotationsForIgnoringCode,
-            $this->ignoreDeprecatedCode
-        );
-
-        if ($this->cachesStaticAnalysis()) {
-            $this->analyser = new CachingFileAnalyser(
-                $this->cacheDirectory,
-                $this->analyser,
-                $this->useAnnotationsForIgnoringCode,
-                $this->ignoreDeprecatedCode
-            );
-        }
-
-        return $this->analyser;
+        return $codeUnits;
     }
 }
